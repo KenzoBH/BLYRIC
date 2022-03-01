@@ -37,6 +37,8 @@ def main():
 
     while True:
 
+        sleep(60*10)
+
         clean_report()
 
         bot    = connect_to_twitter()
@@ -50,8 +52,6 @@ def main():
         send_email_report()
 
         print(report)
-
-        sleep(60*5)
 
 def clean_report():
 
@@ -197,7 +197,7 @@ def check_mentions(bot, genius, df):
                 album = get_album_from_text(genius, mention)
 
                 if album is not None and is_new_album(df, album.id):
-                    register_album(df, album)
+                    df = register_album(df, album)
                     like_tweet(bot, mentions[i])
                     tweet_new_album(bot, album)
                     
@@ -280,7 +280,6 @@ def register_album(df, album):
     except:
         new_df = df
 
-    print(new_df.head())
     export_data(new_df)
 
     return new_df
@@ -341,7 +340,7 @@ def export_data(df):
             open_by_key(credentials["google_sheet_id"]).\
             worksheet("lyrics")
 
-        sh.update(f"A1:F{len(df.T.reset_index().T)}", df.T.reset_index().T.values.tolist())
+        sh.update(f"A1:F{len(df.fillna('').T.reset_index().T)}", df.fillna("").T.reset_index().T.values.tolist())
 
         report["data_export"] = 1
     except:
