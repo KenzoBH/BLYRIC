@@ -37,8 +37,6 @@ def main():
 
     while True:
 
-        sleep(60*5)
-
         clean_report()
 
         bot    = connect_to_twitter()
@@ -52,6 +50,8 @@ def main():
         send_email_report()
 
         print(report)
+
+        sleep(60*5)
 
 def clean_report():
 
