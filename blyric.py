@@ -341,7 +341,6 @@ def export_data(df):
             open_by_key(credentials["google_sheet_id"]).\
             worksheet("lyrics")
 
-        sh.clear()
         sh.update(f"A1:F{len(df.T.reset_index().T)}", df.T.reset_index().T.values.tolist())
 
         report["data_export"] = 1
