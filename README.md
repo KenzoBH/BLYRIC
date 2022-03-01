@@ -29,3 +29,20 @@ When registered, BLYRIC also tweets the new album that was registered, like this
 <p align="center">
     <img src="images/new_album_example.png" width="50%">
 </p>
+
+# Operation
+
+BLYRIC is coded in Python 3.9.5, and works with Twitter API and Genius API.
+
+Its lyrics data is stored in a Google Sheets, being read and updated by Google Sheets API
+
+It is hosted on [Heroku](https://dashboard.heroku.com), for free.
+
+BLYRIC executes some steps everyday:
+
+- Connect to Twitter API
+- Conncet to Genius API
+- Import database
+- Tweets the daily lyric
+- Check the mentions and - if requested - register the new albums on the database
+- Send e-mail report
