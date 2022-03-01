@@ -1,0 +1,7 @@
+gspread==3.7.0
+gspread_dataframe==3.2.1
+lyricsgenius==3.0.1
+pandas==1.2.4
+PyYAML==6.0
+requests==2.27.1
+tweepy==4.5.0
