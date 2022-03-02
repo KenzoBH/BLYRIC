@@ -37,8 +37,6 @@ def main():
 
     while True:
 
-        sleep(60*10)
-
         clean_report()
 
         bot    = connect_to_twitter()
@@ -52,6 +50,8 @@ def main():
         send_email_report()
 
         print(report)
+
+        sleep(86400)
 
 def clean_report():
 
@@ -175,7 +175,7 @@ def check_mentions(bot, genius, df):
 
         credentials = get_credentials()
 
-        mentions = bot.mentions_timeline(since_id = credentials["last_mention_read"])
+        mentions = bot.mentions_timeline(since_id = get_last_mention_read_id())
         report["new_mentions"] = [
             {
                 "tweet_id"  : mention.id,
@@ -212,14 +212,33 @@ def check_mentions(bot, genius, df):
     except:
         None
 
+def get_last_mention_read_id():
+
+    try:
+        credentials = get_credentials()
+
+        sh = gspread.\
+            service_account(filename = "blyric-9f2cb3602446.json").\
+            open_by_key(credentials["google_sheet_id"]).\
+            worksheet("last_mention")
+    
+        last_mention_id = get_as_dataframe(sh)["last_mention_read"][0]
+    except:
+        last_mention_id = 1000000000000000000
+    
+    return last_mention_id
+
 def update_last_mention_read(last_mention_read_id):
     
     try:
         credentials = get_credentials()
 
-        credentials["last_mention_read"] = last_mention_read_id
-        with open(r"credentials.yaml", "w") as file:
-            documents = dump(credentials, file)
+        sh = gspread.\
+            service_account(filename = "blyric-9f2cb3602446.json").\
+            open_by_key(credentials["google_sheet_id"]).\
+            worksheet("last_mention")
+
+        sh.update("A2", str(last_mention_read_id))
     except:
         None
 
