@@ -1,36 +1,34 @@
 
-from   yaml         import load, SafeLoader, dump
+from   yaml         import load, SafeLoader
 from   lyricsgenius import Genius
 import tweepy
 
 from time import sleep
 
+from googleapiclient.discovery import build
+
 import gspread
-from gspread_dataframe import get_as_dataframe
 import pandas as pd
 from   re           import compile
 
 from random   import choice
-from requests import get
-from os       import remove
 
 from smtplib       import SMTP_SSL
 from email.message import EmailMessage
 from datetime      import date
 
 report = {
-    "twitter_api_connection" : 0,
-    "genius_api_connection"  : 0,
+    "youtube_api_connection"     : 0,
+    "twitter_api_connection"     : 0,
+    "genius_api_connection"      : 0,
 
-    "data_import"            : 0,
+    "get_actual_playlist"        : 0,
+    "update_playlist_history"    : 0,
 
-    "tweet"                  : 0,
+    "get_actual_playlist_lyrics" : 0,
+    "update_actual_lyrics"       : 0,
 
-    "new_mentions"           : [],
-    "new_albums_to_tweet"    : 0,
-    "tweeted_new_albums"     : 0,
-
-    "data_export"            : 0
+    "tweet"                      : 0
 }
 
 def main():
@@ -39,25 +37,27 @@ def main():
 
         clean_report()
 
-        bot    = connect_to_twitter()
-        genius = connect_to_genius()
+        youtube = connect_to_youtube()
+        genius  = connect_to_genius()
+        bot     = connect_to_twitter()
 
-        df = import_data()
+        actual_playlist = get_actual_playlist(youtube)
+        update_playlist_history(actual_playlist)
+        actual_playlist_lyrics = get_actual_playlist_lyrics(actual_playlist, genius)
+        update_actual_lyrics(actual_playlist_lyrics)
 
-        tweet_lyric(bot, df)
-        check_mentions(bot, genius, df)
+        tweet_lyric(bot, actual_playlist_lyrics)
 
         send_email_report()
 
         print(report)
 
-        sleep(86400)
+        sleep(60*60*24)
 
 def clean_report():
 
     for key in report.keys():
         report[key] = 0
-    report["new_mentions"] = []
 
 def get_credentials(credentials_filepath = "credentials.yaml"):
 
@@ -70,6 +70,19 @@ def get_credentials(credentials_filepath = "credentials.yaml"):
         credentials = None
 
     return credentials
+
+def connect_to_youtube():
+
+    print("Connecting to YouTube")
+
+    try:
+        credentials = get_credentials()
+        youtube = build("youtube", "v3", developerKey = credentials["youtube_api_key"])
+        report["youtube_api_connection"] = 1
+    except:
+        youtube = None
+
+    return youtube
 
 def connect_to_twitter():
 
@@ -112,9 +125,111 @@ def connect_to_genius():
 
     return genius
 
-def import_data():
+def get_actual_playlist(youtube):
 
-    print("Importing dataset")    
+    print("Getting actual playlist songs")
+
+    try:
+
+        credentials = get_credentials()
+
+        request = youtube.playlistItems().list(
+            part = ["id", "snippet", "status"],
+            playlistId = credentials["playlist_id"],
+            maxResults = 50
+        )
+        response = request.execute()
+
+        song_names = []
+        song_channels = []
+        song_links = []
+
+        for video in response["items"]:
+            song_name = video["snippet"]["title"]
+            song_channel = video["snippet"]["videoOwnerChannelTitle"]
+            song_link = video["snippet"]["resourceId"]["videoId"]
+
+            song_names.append(song_name)
+            song_channels.append(song_channel)
+            song_links.append(song_link)
+
+        playlist = pd.DataFrame({
+            "song_name": song_names,
+            "song_channel": song_channels,
+            "song_id": song_links
+        })
+
+        report["get_actual_playlist"] = 1
+
+    except:
+        playlist = None
+
+    return playlist
+
+def update_playlist_history(actual_playlist):
+
+    print("Updating playlist history")
+
+    try:
+        credentials = get_credentials()
+
+        actual_playlist["grass_date"] = str(date.today())
+
+        sh = gspread.\
+            service_account(filename = "blyric-9f2cb3602446.json").\
+            open_by_key(credentials["google_sheet_id"]).\
+            worksheet("personal_playlist_history")
+
+        sh.insert_rows(actual_playlist.fillna('').values.tolist(), 2)
+
+        report["update_playlist_history"] = 1
+    except:
+        None
+
+def clean_lyric(lyric):
+
+    try:
+        verses = lyric.split("\n")
+        r = compile("(Chorus)|(])|(Verse \d)|(Embed)")
+        return [verse.strip() for verse in verses if not r.search(verse) and verse != ""]
+    except:
+        return lyric
+
+def get_actual_playlist_lyrics(actual_playlist, genius):
+    
+    print("Getting the lyrics")
+
+    try:
+        song_names = []
+        song_artists = []
+        song_lyrics = []
+
+        for i in range(len(actual_playlist)):
+            song = genius.search_song(" - ".join(actual_playlist.iloc[i, :2].values).split(" - Topic")[0])
+            if song is not None:
+                song_name = song.title
+                song_artist = song.artist
+                song_lyric = song.lyrics
+
+                song_names.append(song_name)
+                song_artists.append(song_artist)
+                song_lyrics.append(song_lyric)
+
+        actual_playlist_lyrics = pd.DataFrame({
+            "song_name": song_names,
+            "artist": song_artists,
+            "lyrics": [clean_lyric(full_lyric) for full_lyric in song_lyrics]
+        }).explode("lyrics")
+
+        report["get_actual_playlist_lyrics"] = 1
+    except:
+        actual_playlist_lyrics = None
+
+    return actual_playlist_lyrics
+
+def update_actual_lyrics(actual_playlist_lyrics):
+
+    print("Updating actual lyrics")
 
     try:
         credentials = get_credentials()
@@ -123,25 +238,25 @@ def import_data():
             service_account(filename = "blyric-9f2cb3602446.json").\
             open_by_key(credentials["google_sheet_id"]).\
             worksheet("lyrics")
-        df = get_as_dataframe(sh)
-        
-        report["data_import"] = 1
-    except:
-        df = None
-    
-    return df
 
-def pick_a_lyric(df):
+        sh.clear()
+        sh.update(f"A1:F{len(actual_playlist_lyrics.fillna('').T.reset_index().T)}", actual_playlist_lyrics.fillna("").T.reset_index().T.values.tolist())
+
+        report["update_actual_lyrics"] = 1
+    except:
+        None
+
+def pick_a_lyric(actual_playlist_lyrics):
 
     print("Picking a lyric: ", end = "")
 
     try:
-        album = choice(df["album_name"].unique().tolist())
-        lyric = df\
-                [df["album_name"] == album].\
+        song_choice = choice(actual_playlist_lyrics["song_name"].unique().tolist())
+        lyric = actual_playlist_lyrics\
+                [actual_playlist_lyrics["song_name"] == song_choice].\
                 sample().\
                 to_dict("records")[0]
-        print(f'{lyric["artist_name"]} - {lyric["song"]}')
+        print(f'{lyric["artist"]} - {lyric["song_name"]}')
     except:
         lyric = None
 
@@ -154,253 +269,20 @@ def tweet_lyric(bot, df):
     try:
         lyric = pick_a_lyric(df)
 
-        tweet = f'{lyric["lyrics"]}\n- {lyric["artist_name"]}, {lyric["song"]}\n({lyric["album_name"]})'
-        bot.update_status(tweet)
+        tweet = f'{lyric["lyrics"]}\n- #{lyric["artist"].replace(" ", "")}, {lyric["song_name"]}'
+        #bot.update_status(tweet)
 
-        report["tweet"] = {
-            "tweet"        : tweet,
-            "quote"        : lyric["lyrics"],
-            "song"         : lyric["song"],
-            "artist"       : lyric["artist_name"],
-            "album"        : lyric["album_name"]
-        }
-    except:
-        None
-
-def check_mentions(bot, genius, df):
-
-    print("Checking new mentions: ", end = "")
-
-    try:
-
-        credentials = get_credentials()
-
-        mentions = bot.mentions_timeline(since_id = get_last_mention_read_id())
-        report["new_mentions"] = [
-            {
-                "tweet_id"  : mention.id,
-                "tweet"     : mention.text,
-                "user"      : mention.user.screen_name,
-                "user_pic"  : mention.user.profile_image_url,
-                "new_album" : None,
-                "album_url" : None,
-            }
-            for mention in mentions
-        ]
-        print(len(mentions))
-
-        if len(mentions) != 0:
-
-            for i in range(len(mentions)):
-
-                mention = mentions[i].text.upper().replace(f'@{credentials["twitter_username"].upper()}', "").strip()
-                album = get_album_from_text(genius, mention)
-
-                if album is not None and is_new_album(df, album.id):
-                    df = register_album(df, album)
-                    like_tweet(bot, mentions[i])
-                    tweet_new_album(bot, album)
-                    
-                    x = pd.DataFrame(report["new_mentions"])
-                    x.loc[x["tweet_id"] == mentions[i].id, "new_album"] = album.name
-                    x.loc[x["tweet_id"] == mentions[i].id, "album_url"] = album.url
-                    report["new_mentions"] = x.to_dict("records")
-                    report["new_albums_to_tweet"] += 1
-
-            update_last_mention_read(mentions[0].id)
-
-    except:
-        None
-
-def get_last_mention_read_id():
-
-    try:
-        credentials = get_credentials()
-
-        sh = gspread.\
-            service_account(filename = "blyric-9f2cb3602446.json").\
-            open_by_key(credentials["google_sheet_id"]).\
-            worksheet("last_mention")
-    
-        last_mention_id = get_as_dataframe(sh)["last_mention_read"][0]
-    except:
-        last_mention_id = 1000000000000000000
-    
-    return last_mention_id
-
-def update_last_mention_read(last_mention_read_id):
-    
-    try:
-        credentials = get_credentials()
-
-        sh = gspread.\
-            service_account(filename = "blyric-9f2cb3602446.json").\
-            open_by_key(credentials["google_sheet_id"]).\
-            worksheet("last_mention")
-
-        sh.update("A2", str(last_mention_read_id))
-    except:
-        None
-
-def get_album_from_text(genius, tweet):
-
-    try:
-
-        print(f"\tLooking for any album in this tweet: '{tweet}'")
-
-        album = genius.search_album(tweet)
-
-        if album is None or len(genius.artist_leaderboard(album.artist.id)["leaderboard"]) < 10:
-            print("\t\tAlbum not found")
-            return None    
-        else:
-            print(f'\t\tAlbum found: {album.name}')
-            return album
-
-    except:
-        return None
-
-def is_new_album(df, id_):
-
-    try:
-        if len(df[df["album_id"].isin([id_])]) == 0:
-            print("\t\tAlbum not registered yet")
-            return True
-        else:
-            print("\t\tAlbum already registered")
-            return False
-    except:
-        print("\t\tError checking if album is registered")
-        return False
-
-def clean_lyric(lyric):
-
-    try:
-        verses = lyric.split("\n")
-        r = compile("(Chorus)|(])|(Verse \d)|(Embed)")
-        return [verse.strip() for verse in verses if not r.search(verse) and verse != ""]
-    except:
-        return lyric
-
-def register_album(df, album):
-
-    print(f"\t\tRegistering album: {album.name}")
-
-    try:
-        new_album = pd.DataFrame({
-            "artist_name" : album.artist.name.replace("\u200b", ""),
-            "artist_id"   : album.artist.id,
-            "album_name"  : album.name,
-            "album_id"    : album.id,
-            "song"        : [track.song.title for track in album.tracks],
-            "lyrics"      : [clean_lyric(track.song.lyrics) for track in album.tracks]
-        }).explode("lyrics")
-        new_df = df.append(new_album)
-    except:
-        new_df = df
-
-    export_data(new_df)
-
-    return new_df
-
-def tweet_new_album(bot, album):
-
-    try:
-        tweet = f"""{album.artist.name}, {album.name} ({album.release_date_components.year})\n"""
-        for i in range(len(album.tracks)):
-            tweet += f"\n{i + 1}. {album.tracks[i].song.title}"
-            if len(tweet) > 240:
-                tweet += "\n[...]"
-                break
-
-        files = [album.cover_art_url, album.artist.image_url]
-        filenames = []
-
-        media_ids = []
-
-        for i in range(len(files)):
-
-            if files[i][-3:] != "gif":
-                request = get(files[i], stream = True)
-
-                filename = f'{"album_cover" if i == 0 else "artist_cover"}.jpg'
-                filenames.append(filename)
-
-                if request.status_code == 200:
-                    with open(filename, "wb") as image:
-                        for chunk in request:
-                            image.write(chunk)
-
-                res = bot.media_upload(filename)
-                media_ids.append(res.media_id)
-
-        bot.update_status(
-            status = tweet,
-            media_ids = media_ids
-        )
-
-        for filename in filenames:
-            remove(filename)
-
-        report["tweeted_new_albums"] += 1
-
-    except:
-        None
-
-def export_data(df):
-    
-    print("Exporting data")
-
-    try:
-        credentials = get_credentials()
-
-        sh = gspread.\
-            service_account(filename = "blyric-9f2cb3602446.json").\
-            open_by_key(credentials["google_sheet_id"]).\
-            worksheet("lyrics")
-
-        sh.update(f"A1:F{len(df.fillna('').T.reset_index().T)}", df.fillna("").T.reset_index().T.values.tolist())
-
-        report["data_export"] = 1
-    except:
-        None
-
-def like_tweet(bot, tweet):
-
-    try:
-        bot.create_favorite(tweet.id)
+        report["tweet"] = tweet
     except:
         None
 
 def send_email_report():
 
-    mentions_table = ""
-    if len(report["new_mentions"]) != 0:
-        mentions_table += '''
-        <table style="line-height: 35px; width: 500px; border-collapse: collapse; font-family: Arial;">
-            <tr style="border-bottom: 1px solid black;">
-                <th>User picture</th>
-                <th>User</th>
-                <th>Mention tweet</th>
-                <th>Album registered</th>
-            </tr>
-        '''
-        for mention in report["new_mentions"]:
-            mentions_table += f"""
-            <tr>
-                <td><img src="{mention["user_pic"]}" alt=""></td>
-                <td><a href="https://twitter.com/{mention["user"]}">@{mention["user"]}</a></td>
-                <td><a href="https://twitter.com/{mention["user"]}/status/{mention["tweet_id"]}">{mention["tweet"]}</a></td>
-                <td><a href="{mention["album_url"]}">{mention["new_album"]}</a></td>
-            </tr>
-            """
-        mentions_table += "</table>"
-
     credentials = get_credentials()
 
     msg = EmailMessage()
 
-    msg["Subject"] = f"Blyric Twitter Bot - Report [{str(date.today())}]"
+    msg["Subject"] = f"BLYRIC Twitter Bot - Report [{str(date.today())}]"
     msg["From"]    = credentials["email_address"]
     msg["To"]      = credentials["email_address"]
 
@@ -410,7 +292,7 @@ def send_email_report():
             <p>
             Daily tweet:
             <br>
-            {report["tweet"]["tweet"] if report["tweet"] != 0 else "Error"}
+            {report["tweet"] if report["tweet"] != 0 else "Error"}
             </p>
 
             <table style="line-height: 35px; width: 500px; border-collapse: collapse; font-family: Arial;">
@@ -419,38 +301,36 @@ def send_email_report():
                     <th>Status</th>
                 </tr>
                 <tr>
+                    <td>YouTube connection</td>
+                    <td>{"Success" if report["youtube_api_connection"] == 1 else "Fail"}</td>
+                </tr>
+                <tr>
                     <td>Twitter connection</td>
                     <td>{"Success" if report["twitter_api_connection"] == 1 else "Fail"}</td>
                 </tr>
                 <tr>
-                    <td>Genius collection</td>
+                    <td>Genius connection</td>
                     <td>{"Success" if report["genius_api_connection"] == 1 else "Fail"}</td>
                 </tr>
                 <tr>
-                    <td>Data import</td>
-                    <td>{"Success" if report["data_import"] == 1 else "Fail"}</td>
+                    <td>Data import: actual playlist</td>
+                    <td>{"Success" if report["get_actual_playlist"] == 1 else "Fail"}</td>
                 </tr>
                 <tr>
-                    <td>New mentions</td>
-                    <td>{len(report["new_mentions"])}</td>
+                    <td>Data export: actual playlist</td>
+                    <td>{"Success" if report["update_playlist_history"] == 1 else "Fail"}</td>
                 </tr>
                 <tr>
-                    <td>Albums requested</td>
-                    <td>{report["new_albums_to_tweet"]}</td>
+                    <td>Data import: lyrics</td>
+                    <td>{"Success" if report["get_actual_playlist_lyrics"] == 1 else "Not done"}</td>
                 </tr>
                 <tr>
-                    <td>New albums registered</td>
-                    <td>{report["tweeted_new_albums"]}</td>
-                </tr>
-                <tr>
-                    <td>Data export</td>
-                    <td>{"Success" if report["data_export"] == 1 else "Not done"}</td>
+                    <td>Data export: lyrics</td>
+                    <td>{"Success" if report["update_actual_lyrics"] == 1 else "Not done"}</td>
                 </tr>
             </table>
 
-            {mentions_table}
-
-            <p>Regards, <a href="https://twitter.com/{credentials["twitter_username"]}">Blyric</a>.</p>
+            <p>Regards, <a href="https://twitter.com/{credentials["twitter_username"]}">BLYRIC</a>.</p>
         </body>
     </html>
     ''',
@@ -458,7 +338,7 @@ def send_email_report():
     )
 
     with SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(credentials["email_address"], credentials["email_password"])
+        smtp.login(credentials["email_address"], credentials["email_app_password"])
         smtp.send_message(msg)
 
 if __name__ == "__main__":
